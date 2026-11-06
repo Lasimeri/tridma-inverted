@@ -44,10 +44,10 @@ with a 2 GiB host window and no swap in host memory.
 
 | | Value |
 |---|---|
-| prefill, 1392-token prompt | **108.15 tok/s** (12.87 s) |
-| generation | 5.42 tok/s (6.31 with the prompt cached), MTP draft accepted 21 of 27 |
-| the card's DMA, card to host window | 3.32 GB/s (`vpu_dma -D`); the router fetched at 1.99 GB/s during a prefill |
-| disk reads | 28.6 MiB on the first request after a start (weights the backend uploads at their first use), 24 KiB on the next |
+| prefill, 1400-token prompt | **183.47 tok/s** (7.63 s) with router v2 once it has learned the order (144.4 tok/s on the first prompt after a start; 108.15 with router v1) |
+| generation | 4.98-6.95 tok/s, with the MTP draft accepting 19 of 34 to 22 of 27 |
+| the card's DMA, card to host window | 3.32 GB/s (`vpu_dma -D`), the PCIe Gen2 x8 link's ceiling; router v2 streams 3.24-3.31 GB/s during a prefill (v1: 1.44-1.52) |
+| disk reads | 22-28.6 MiB on the first request after a start (weights the backend uploads at their first use), 24-176 KiB on the next |
 | host iowait | 0 |
 | host memory available with the server up | 5.87 to 6.87 GB |
 

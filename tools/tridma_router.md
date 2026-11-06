@@ -19,12 +19,24 @@ are in [docs/router.md](../docs/router.md).
      `MADV_NOHUGEPAGE`) over the whole pages of that range and registers it with
      userfaultfd (`UFFDIO_REGISTER_MODE_MISSING`), recording the range (sorted,
      for a binary search) with its card offset;
-   - on a fault (its handler thread, `poll` + `read` on the userfaultfd), fetches
-     the chunk containing the address (`TRIDMA_CHUNK`, 8 MiB) from the card:
-     `K_DOWNLOAD` (32) of the card bytes, aligned down to a 4 KiB block (the
-     worker's rule), into the window's staging area (`TRIDMA_STAGE`, 1 GiB), then
-     `UFFDIO_COPY` from the staging area at the right byte into the pages, which
-     wakes the faulting thread; it also fills the next `TRIDMA_AHEAD` (2) chunks;
+   - routes every fault through three threads, each with one job (2026-11-06, router
+     v2; v1 did all of it in one thread, the card idle during each copy and the
+     first chunk of every matrix a stall):
+     - the **fault thread** (`poll` + `read` on the userfaultfd) puts a chunk
+       (`TRIDMA_CHUNK`, 8 MiB) not yet asked for at the head of a demand queue and
+       moves the read-ahead cursor there; it never waits for the card;
+     - the **fetch thread** owns the card channel: demand chunks first, then the
+       cursor's chunks, at most `TRIDMA_AHEAD` (32, 256 MiB) past the last fault,
+       each a `K_DOWNLOAD` (32) of the card bytes aligned down to a 4 KiB block
+       (the worker's rule) into one of four staging slots of the window
+       (`TRIDMA_STAGE`, 1 GiB), back to back, so the card's link never waits for
+       the host;
+     - the **fill thread** `UFFDIO_COPY`s a finished slot at the right byte into
+       the pages (which wakes every thread blocked on them) and gives the slot back.
+   - carries the read-ahead from the end of one range into the range read after it
+     the last time (`succ[]`, learned from the demand faults that open a range: the
+     graph reads the weights in the same order on every prompt), so after the first
+     prompt the stream runs from one matrix into the next without a stall;
    - keeps at most `TRIDMA_BUDGET` (512 MiB) of such pages: the oldest chunks go
      back with `MADV_DONTNEED` and fault again if read again.
 
@@ -54,10 +66,28 @@ filled on fault and copied with `cudaMemcpy` to a 3090 Ti: 16,384 faults handled
 | Variable | Default | Meaning |
 |---|---|---|
 | `TRIDMA_CHUNK` | 8 MiB | bytes per fetch |
-| `TRIDMA_AHEAD` | 2 | chunks read ahead after a fault |
+| `TRIDMA_AHEAD` | 32 | chunks read ahead past the last fault (the budget is raised to at least `TRIDMA_AHEAD` + 6 chunks) |
 | `TRIDMA_BUDGET` | 512 MiB | card-backed bytes resident at most |
 | `TRIDMA_STAGE` | 1 GiB | window offset of the staging area (the backend uses at most 768 MiB of the window) |
-| `TRIDMA_VERBOSE` | 0 | 1: log the populate changes, every backed range, and a fetch summary every 256 chunks |
+| `TRIDMA_VERBOSE` | 0 | 1: log the populate changes, every backed range, a summary every 512 chunks, and one line per burst (a prompt's stream: bytes, seconds, GB/s, chunks on demand and read ahead) |
+| `TRIDMA_VERIFY` | 0 | N: a test. Every Nth chunk filled is compared, in the pages themselves, with the GGUF file at the same offset (read for it and dropped from the page cache after); the burst line counts equal and differing chunks |
 
 Build: `gcc -O2 -Wall -Wextra -shared -fPIC -I<Intel-Phi-AVX-512-C>/card/vpu -o
 libtridma.so tridma_router.c -ldl -lpthread`.
+
+## Measured (2026-11-06, the inverted layout, a 1400-token prompt, `cache_prompt` off)
+
+| | v1 (one thread) | v2, first prompt (learning the order) | v2, after it |
+|---|---|---|---|
+| card -> host during the stream | 1.44-1.52 GB/s | 2.17-2.38 GB/s | **3.24-3.31 GB/s** (13.161 GB in 4.058 s) |
+| chunks on demand / read ahead | | | 2 / 1655 |
+| prefill | 111.33 tok/s (12.53 s) | 143.3-144.4 tok/s | **181.32-183.47 tok/s** (7.63 s) |
+
+The card's own rate out (`vpu_dma -D`) is 3.32 GB/s on its PCIe Gen2 x8 link (5 GT/s,
+4 GB/s raw), so v2 streams at the link's ceiling; more channels cannot add to it.
+`TRIDMA_VERIFY=1` over a learning prompt and a read-ahead prompt: **3,286 of 3,286
+chunks equal to the GGUF, 0 differ.** Two traps found on the way: llama.cpp unmaps
+fragments of a mapping (`unmap_fragment`), the first of which can start at the
+mapping's first byte, so `munmap` now forgets a GGUF mapping only when all of it
+goes; and a later file can be mapped into such a hole (the MTP draft model inside
+the main model's span), so a lookup by address takes the newest mapping covering it.

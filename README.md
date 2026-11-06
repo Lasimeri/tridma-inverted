@@ -21,7 +21,7 @@ backend and card worker, and its `scripts/worker.sh` starts the worker.
 │ 16,378 MiB used            │ │ GB locked; 5.9-6.9 GB free   │ │ K_DOWNLOAD 3.32 GB/s out   │
 └────────────────────────────┘ └──────────────────────────────┘ └────────────────────────────┘
      ▲ card rows for prefill: page fault -> K_DOWNLOAD -> window -> UFFDIO_COPY (libtridma.so)
- 1392-token prompt: prefill 108.15 tok/s; generation 5.42 tok/s (6.31 cached), MTP 21/27      
+ 1400-token prompt: prefill 183.47 tok/s (router v2, 3.3 GB/s); generation 4.98-6.95 tok/s    
 ```
 
 | File | What it is |
